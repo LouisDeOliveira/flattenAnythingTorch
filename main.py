@@ -1,12 +1,14 @@
-import hydra
-from tqdm import tqdm
-import torch
 import math
-from mesh import Mesh
-from model import CutNet, WrapNet, UnwrapNet, DeformNet
-from loss import WrappingLoss, UnwrappingLoss, CycleLoss
+
+import hydra
+import torch
 from omegaconf import DictConfig
 from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
+
+from loss import CycleLoss, UnwrappingLoss, WrappingLoss
+from mesh import Mesh
+from model import CutNet, DeformNet, UnwrapNet, WrapNet
 
 AVAILABLE_MESHES = ["nefertiti"]
 
@@ -75,6 +77,7 @@ def train(cfg: DictConfig):
     loss_cycle = CycleLoss()
 
     for it in tqdm(range(n_iters)):
+        optimizer.zero_grad()
 
         barycenters = mesh.random_barycentric(n_samples)
         faces = mesh.sample_faces(n_samples)
