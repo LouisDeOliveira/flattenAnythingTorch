@@ -4,7 +4,7 @@ import hydra
 import torch
 from omegaconf import DictConfig
 from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
+from tqdm import trange
 
 from loss import CycleLoss, UnwrappingLoss, WrappingLoss
 from mesh import Mesh
@@ -76,7 +76,8 @@ def train(cfg: DictConfig):
     )
     loss_cycle = CycleLoss()
 
-    for it in tqdm(range(n_iters)):
+    t = trange(n_iters, leave=True)
+    for it in t:
         optimizer.zero_grad()
 
         barycenters = mesh.random_barycentric(n_samples)
@@ -119,7 +120,7 @@ def train(cfg: DictConfig):
             writer.add_scalar("l_cycle_n", l_cycle_n.item(), global_step=it)
             writer.add_scalar("weighted loss", loss.item(), global_step=it)
 
-        print(loss.item())
+        t.set_description(f"loss={loss.item():.5f}")
 
         loss.backward()
         optimizer.step()

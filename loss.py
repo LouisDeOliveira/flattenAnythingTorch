@@ -44,8 +44,9 @@ class CycleLoss(torch.nn.Module):
     ):
         l_p = torch.nn.functional.l1_loss(p, p_c)
         l_q = torch.nn.functional.l1_loss(q_h, q_h_c)
-        l_n = -torch.mean(
-            torch.sum(p_n * p_n_c, dim=-1)
+        l_n = torch.mean(
+            1.0
+            - torch.sum(p_n * p_n_c, dim=-1)
             / (torch.norm(p_n, dim=-1) * torch.norm(p_n_c, dim=-1))
         )
 
