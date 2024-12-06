@@ -4,6 +4,7 @@ import numpy as np
 import plyfile
 import torch
 import trimesh
+from PIL import Image
 
 
 def make_rotation_matrix(axis: torch.Tensor, angle: torch.Tensor):
@@ -30,6 +31,67 @@ def make_rotation_matrix(axis: torch.Tensor, angle: torch.Tensor):
         + torch.sin(angle).unsqueeze(-1) * K
         + (1 - torch.cos(angle).unsqueeze(-1)) * L
     )
+
+
+def make_transform(R: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    T = torch.eye(4, device=R.device)
+    T[:3, :3] = R
+    T[:3, 3] = t
+
+    return T
+
+
+class NormalizeLayer(torch.nn.Module):
+    """
+    Layer with no trainable parameters.
+    Computes (x-center)/scale
+    """
+
+    def __init__(self, center: torch.Tensor, scale: torch.Tensor) -> None:
+        super().__init__()
+        self.register_buffer("center", center)
+        self.register_buffer("scale", scale)
+
+    def forward(self, x: torch.Tensor):
+        return (x - self.center) / self.scale
+
+
+class UnNormalizeLayer(torch.nn.Module):
+    """
+    Layer with no trainable parameters.
+    Computes x*scale + center
+    """
+
+    def __init__(self, center: torch.Tensor, scale: torch.Tensor) -> None:
+        super().__init__()
+        self.register_buffer("center", center)
+        self.register_buffer("scale", scale)
+
+    def forward(self, x: torch.Tensor):
+        return x * self.scale + self.center
+
+
+class TransformLayer(torch.nn.Module):
+    """
+    Layer with no trainable parameter
+    Computes R*x+t from a given 4x4 transformation matrix R|t
+    """
+
+    def __init__(self, T: torch.Tensor) -> None:
+        super().__init__()
+        self.register_buffer("R", T[:3, :3])
+        self.register_buffer("t", T[:3, 3])
+
+    @staticmethod
+    def from_R_t(R: torch.Tensor, t: torch.Tensor) -> "TransformLayer":
+        T = torch.eye(4)
+        T[:3, :3] = R
+        T[:3, 3] = t
+
+        return TransformLayer(T)
+
+    def forward(self, x: torch.Tensor):
+        return x @ self.R.T + self.t
 
 
 class Mesh:
@@ -70,6 +132,7 @@ class Mesh:
     @staticmethod
     def from_file(path: str, device: torch.device = "cuda"):
         mesh: trimesh.base.Trimesh = trimesh.load(path, force="mesh")
+        mesh.update_faces(mesh.nondegenerate_faces(height=1e-10))
         vertices = torch.tensor(mesh.vertices, dtype=torch.float, device=device)
         faces = torch.tensor(mesh.faces, dtype=torch.long, device=device)
         vertex_normals = torch.nn.functional.normalize(
@@ -98,13 +161,14 @@ class Mesh:
         writes mesh to ply file
         for now can only write vertices faces ands uvs.
         """
+
         if file_path[-3::] == "obj":
             mesh = trimesh.base.Trimesh(
-                self.vertices.numpy(),
-                self.faces.numpy(),
-                vertex_normals=self.vertex_normals.numpy(),
+                self.vertices.cpu().numpy(),
+                self.faces.cpu().numpy(),
+                vertex_normals=self.vertex_normals.cpu().numpy(),
                 vertex_colors=(
-                    self.vertex_colors.numpy()
+                    self.vertex_colors.cpu().numpy()
                     if self.vertex_colors is not None
                     else None
                 ),
@@ -113,10 +177,10 @@ class Mesh:
             mesh.export(file_path)
 
         elif file_path[-3::] == "ply":
-            vertices = self.vertices.numpy()
-            vertex_normals = self.vertex_normals.numpy()
-            faces = self.faces.numpy()
-            uvs = self.uvs.numpy()
+            vertices = self.vertices.cpu().numpy()
+            vertex_normals = self.vertex_normals.cpu().numpy()
+            faces = self.faces.cpu().numpy()
+            uvs = self.uvs.cpu().numpy()
 
             dtype_full = [
                 ("x", "f4"),
@@ -207,6 +271,19 @@ class Mesh:
         points = barycenters.unsqueeze(1) @ triangles
         return points.squeeze().to(self.device)
 
+    def sample_uvs_from_barycenters(
+        self, face_idx: torch.LongTensor, barycenters: torch.FloatTensor
+    ):
+        """
+        Samples the mesh uvs from:
+        [N,] face ids to sample
+        [N, 3] barycentric coordinates
+        """
+
+        vertex_uvs = self.uvs[self.faces[face_idx]]
+        uvs = barycenters.unsqueeze(1) @ vertex_uvs
+        return uvs.squeeze().to(self.device)
+
     def sample_uv(self, n_samples: int):
         return torch.rand(n_samples, 2, device=self.device)
 
@@ -231,8 +308,6 @@ class Mesh:
         normals : [n,3]
         output : tuple(tangeants:[n,3], bitangeants:[n,3])
         """
-
-        # TODO : generate better tangeants
 
         normals = torch.nn.functional.normalize(normals, dim=1)
 
@@ -259,7 +334,6 @@ class Mesh:
 
     #     """
 
-    #     # TODO : generate better tangents
     #     normals = torch.nn.functional.normalize(normals, dim=1)
     #     rots = make_rotation_matrix(
     #         normals,
@@ -314,9 +388,14 @@ class Mesh:
         """
         Writes a [N,3] tensor as a .ply pointcloud file
         """
-        cloud = trimesh.PointCloud(
-            point_cloud.detach().cpu().numpy(), color.detach().cpu().numpy()
-        )
+        if color is not None:
+            cloud = trimesh.PointCloud(
+                point_cloud.detach().cpu().numpy(), color.detach().cpu().numpy()
+            )
+
+        else:
+            cloud = trimesh.PointCloud(point_cloud.detach().cpu().numpy())
+
         cloud.export(output_path)
 
     @staticmethod
@@ -328,16 +407,21 @@ class Mesh:
         cloud.export(output_path)
 
     def normalize_mesh(self):
+        if not self._is_normal:
+            self.compute_normalization_params()
+            self.vertices = (self.vertices - self._normal_center) / self._normal_scale
+            self._is_normal = True
+
+        else:
+            print("this mesh was already normalized.")
+
+    def compute_normalization_params(self):
         min_vertex = torch.min(self.vertices, dim=0)[0]
         max_vertex = torch.max(self.vertices, dim=0)[0]
         scale = torch.max(max_vertex - min_vertex)
         center = (max_vertex + min_vertex) / 2
-        self.vertices = (self.vertices - center) / scale
-        self.compute_vertex_normals()
-
         self._normal_center = center
         self._normal_scale = scale
-        self._is_normal = True
 
     def reset_mesh(self):
         if self._is_normal:
@@ -393,14 +477,90 @@ class Mesh:
         self._normal_center = self._normal_center.to(device)
         self._normal_scale = self._normal_scale.to(device)
 
+    def compute_naive_uv(self):
+        """
+        generates uv coordinates for each vertex by flattening the dimension of lowest variance and renormalizing to [0,1]
+        """
+        variance = torch.var(self.vertices, dim=0)
+        flatten_dim = torch.argmin(variance)
+        uvs = self.vertices.clone().detach()
+        uvs = uvs[
+            :, [i for i in range(uvs.shape[1]) if i != flatten_dim]
+        ]  # drop low variance dim
+
+        uvs -= uvs.min(dim=0, keepdim=True)[0]
+        uvs /= uvs.max(dim=0, keepdim=True)[0]
+
+        self.uvs = uvs
+
+    def set_uvs(self, uvs: torch.Tensor) -> None:
+
+        if uvs.shape[0] != self.vertices.shape[0]:
+            raise ValueError(
+                f"got {uvs.shape[0]} uv coords but the mesh has {self.vertices.shape[0]} vertices"
+            )
+
+        self.uvs = uvs.to(self.device)
+
+    def generate_normal_map(
+        self, size: int, output_path: str = None, k: int = 3
+    ) -> None:
+        """
+        Bakes the normals of the mesh into a texture by sampling each face randomly k times
+        and interpolating the normals.
+
+        """
+        n = self.faces.shape[0]
+        barycenters = self.random_barycentric(k * n)
+        faces = torch.arange(0, k * n, device="cuda") % n
+        normals = self.sample_smooth_normals(faces, barycenters).cpu().numpy()
+        uvs = self.sample_uvs_from_barycenters(faces, barycenters).cpu().numpy()
+
+        texture = np.zeros((size, size, 3), dtype=np.float32)
+        weights_map = np.zeros((size, size), dtype=np.float32)
+
+        for uv, normal in zip(uvs, normals):
+            u, v = uv
+
+            x = u * (size - 1)
+            y = (1 - v) * (size - 1)  # Flip V for image coordinates
+
+            x0 = int(np.floor(x))
+            y0 = int(np.floor(y))
+            x1 = min(x0 + 1, size - 1)
+            y1 = min(y0 + 1, size - 1)
+
+            dx = x - x0
+            dy = y - y0
+
+            weights = {
+                (x0, y0): (1 - dx) * (1 - dy),
+                (x1, y0): dx * (1 - dy),
+                (x0, y1): (1 - dx) * dy,
+                (x1, y1): dx * dy,
+            }
+
+            for (x, y), weight in weights.items():
+                texture[y, x] += weight * normal
+                weights_map[y, x] += weight
+
+        weights_map[weights_map == 0.0] = 1.0
+        weights_map = weights_map[..., np.newaxis]
+        texture = texture / weights_map
+
+        texture = (texture + 1.0) / 2.0
+
+        if output_path is not None:
+            texture_uint = (texture * 255.0).astype(np.uint8)
+            Image.fromarray(texture_uint, mode="RGB").save(output_path)
+
+        return texture
+
 
 if __name__ == "__main__":
-    # bunny_path = "assets/meshes/stanford-bunny.obj"
-    # mesh = Mesh.from_file(bunny_path, "cpu")
-    # points = mesh.sample_mesh(1000)
-    # mesh.normalize_mesh()
-    # Mesh.write_pcd(mesh.vertices, "./test.ply")
-    axis = torch.rand(100, 3)
-    angle = torch.rand(100, 1)
-
-    print(make_rotation_matrix(axis, angle).shape)
+    T = torch.eye(4)
+    T[:3, 3] = torch.tensor([1.0, 2.0, 3.0])
+    trans = TransformLayer(T)
+    x = torch.ones(1000, 3)
+    y = trans(x)
+    print(y.shape)
