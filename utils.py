@@ -77,22 +77,22 @@ def generate_checkerboard_pcd_uv(
     vertex_uvs: torch.Tensor,
     step: int,
 ):
-    bw_checkerboard = torch.zeros(3, 500, 500, device="cuda")
-    for i in range(10):
-        for j in range(10):
+    bw_checkerboard = torch.zeros(3, 800, 800, device="cuda")
+    for i in range(20):
+        for j in range(20):
             color = (
                 torch.tensor([0.0, 0.0, 0.0], device="cuda")
                 if (i + j) % 2 == 0
                 else torch.tensor([1.0, 1.0, 1.0], device="cuda")
             )
-            bw_checkerboard[:, i * 50 : (i + 1) * 50, j * 50 : (j + 1) * 50] = (
-                color.unsqueeze(-1).unsqueeze(-1).broadcast_to((3, 50, 50))
+            bw_checkerboard[:, i * 40 : (i + 1) * 40, j * 40 : (j + 1) * 40] = (
+                color.unsqueeze(-1).unsqueeze(-1).broadcast_to((3, 40, 40))
             )
 
     vertex_colors = (
         torch.nn.functional.grid_sample(
             bw_checkerboard.unsqueeze(0),
-            vertex_uvs.unsqueeze(0).unsqueeze(-2),
+            2 * vertex_uvs.unsqueeze(0).unsqueeze(-2) - 1.0,
             align_corners=False,
         )
         .squeeze()

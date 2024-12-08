@@ -64,6 +64,7 @@ class DiffLoss(torch.nn.Module):
         self.alpha_stretch = alpha_stretch
 
     def forward(self, p: torch.Tensor, q: torch.Tensor):
+        # TODO is this working ??
         dfx = torch.autograd.grad(
             p[:, 0],
             q,

@@ -21,6 +21,7 @@ AVAILABLE_MESHES = [
     "hand",
     "dragon",
     "teapot",
+    "cow  ",
 ]
 
 
@@ -70,10 +71,10 @@ def train(cfg: DictConfig):
             hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
         )
 
-    Md = DeformNet(h, n_hidden_layers).to("cuda")
+    Md = DeformNet(h, n_hidden_layers, torch.nn.Identity()).to("cuda")
     Mw = WrapNet(h, n_hidden_layers).to("cuda")
     Mc = CutNet(h, n_hidden_layers).to("cuda")
-    Mu = UnwrapNet(h, n_hidden_layers).to("cuda")
+    Mu = UnwrapNet(h, n_hidden_layers, torch.nn.Identity()).to("cuda")
 
     mesh = load_mesh(cfg.dataset)
     mesh.normalize_mesh()
@@ -94,7 +95,7 @@ def train(cfg: DictConfig):
         eps=(2 / (math.ceil(math.sqrt(n_samples)) - 1)) * 0.25, K=8
     )
     loss_cycle = CycleLoss()
-    loss_diff = DiffLoss(alpha_stretch=0.0)
+    loss_diff = DiffLoss(alpha_stretch=1.0)
     t = trange(n_iters, leave=True)
     for it in t:
         optimizer.zero_grad()
@@ -103,7 +104,6 @@ def train(cfg: DictConfig):
         faces = mesh.sample_faces(n_samples)
         p = mesh.sample_from_barycenters(faces, barycenters)
         g = torch.rand((n_samples, 2), device="cuda")
-        # p_n = mesh.sample_face_normals(faces)
         p_n = mesh.sample_smooth_normals(faces, barycenters)
 
         p_cut = Mc(p)  # cut
@@ -116,13 +116,21 @@ def train(cfg: DictConfig):
 
         q_h_c = Mu(p_h_cut)  # unwrap
 
-        # q = uv_bounding_box_normalization(q).squeeze()
-        # q_h = uv_bounding_box_normalization(q_h).squeeze()
-        # q_h_c = uv_bounding_box_normalization(q_h_c).squeeze()
+        q_normalized = uv_bounding_box_normalization(q).squeeze()
+        q_h_normalized = uv_bounding_box_normalization(q_h).squeeze()
+        q_h_c_normalized = uv_bounding_box_normalization(q_h_c).squeeze()
 
-        # l_diff = loss_diff(p_c, q)
+        q_normalized = q
+        q_h_normalized = q_h
+        q_h_c_normalized = q_h_c
+
+        l_diff = loss_diff(p_c, q)
         l_wrap = loss_wrap(p_h, p)
-        l_unwrap = loss_unwrap(q) + loss_unwrap(q_h) + loss_unwrap(q_h_c)
+        l_unwrap = (
+            loss_unwrap(q_normalized)
+            + loss_unwrap(q_h_normalized)
+            + loss_unwrap(q_h_c_normalized)
+        )
         l_cycle_p, l_cycle_q, l_cycle_n = loss_cycle(p, p_c, q_h, q_h_c, p_n, p_n_c)
 
         loss: torch.Tensor = (
@@ -131,16 +139,16 @@ def train(cfg: DictConfig):
             + 0.01 * l_cycle_p
             + 0.01 * l_cycle_q
             + 0.005 * l_cycle_n
-            # + 0.01 * l_diff
+            + 0.1 * l_diff
         )
-
+        # TODO: loss coeffs
         if log:
             writer.add_scalar("l_wrap", l_wrap.item(), global_step=it)
             writer.add_scalar("l_unwrap", l_unwrap.item(), global_step=it)
             writer.add_scalar("l_cycle_p", l_cycle_p.item(), global_step=it)
             writer.add_scalar("l_cycle_q", l_cycle_q.item(), global_step=it)
             writer.add_scalar("l_cycle_n", l_cycle_n.item(), global_step=it)
-            # writer.add_scalar("l_diff", l_diff.item(), global_step=it)
+            writer.add_scalar("l_diff", l_diff.item(), global_step=it)
             writer.add_scalar("weighted loss", loss.item(), global_step=it)
 
         t.set_description(f"loss={loss.item():.5f}")
@@ -155,10 +163,9 @@ def train(cfg: DictConfig):
                 cut_mesh = Mc(pcd)
                 Mesh.write_pcd(cut_mesh, f"./cut_mesh_{it}.ply")
                 mesh_uvs = Mu(cut_mesh)
-                mesh_uvs = uv_bounding_box_normalization(mesh_uvs)
                 mesh_uvs = rescale_to_1(mesh_uvs)
                 mesh.set_uvs(mesh_uvs)
-                mesh.generate_normal_map(256, f"./normal_map_{it}.png", k=8)
+                mesh.generate_normal_map(256, f"./normal_map_{it}.png", k=3)
                 generate_checkerboard_pcd_uv(pcd, mesh_uvs, it)
 
 
