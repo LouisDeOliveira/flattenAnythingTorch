@@ -34,13 +34,18 @@ class MLP(torch.nn.Module):
 
 
 class DeformNet(torch.nn.Module):
-    def __init__(self, h: int, n_hidden_layers: int):
+    def __init__(
+        self,
+        h: int,
+        n_hidden_layers: int,
+        output_activation: torch.nn.Module = torch.nn.Identity(),
+    ):
         super().__init__()
         self.feature_model = MLP(
             2,
             h,
-            torch.nn.LeakyReLU(0.001),
-            torch.nn.LeakyReLU(0.001),
+            torch.nn.LeakyReLU(0.01),
+            torch.nn.LeakyReLU(0.01),
             n_hidden_layers,
             h,
         )
@@ -48,8 +53,8 @@ class DeformNet(torch.nn.Module):
         self.offset_model = MLP(
             h + 2,
             2,
-            torch.nn.LeakyReLU(0.001),
-            torch.nn.Identity(),
+            torch.nn.LeakyReLU(0.01),
+            output_activation,
             n_hidden_layers,
             h,
         )
@@ -59,13 +64,17 @@ class DeformNet(torch.nn.Module):
 
 
 class WrapNet(torch.nn.Module):
-    def __init__(self, h: int, n_hidden_layers: int):
+    def __init__(
+        self,
+        h: int,
+        n_hidden_layers: int,
+    ):
         super().__init__()
         self.feature_model = MLP(
             2,
             h,
-            torch.nn.LeakyReLU(0.001),
-            torch.nn.LeakyReLU(0.001),
+            torch.nn.LeakyReLU(0.01),
+            torch.nn.LeakyReLU(0.01),
             n_hidden_layers,
             h,
         )
@@ -73,7 +82,7 @@ class WrapNet(torch.nn.Module):
         self.output_model = MLP(
             h + 2,
             6,
-            torch.nn.LeakyReLU(0.001),
+            torch.nn.LeakyReLU(0.01),
             torch.nn.Identity(),
             n_hidden_layers,
             h,
@@ -92,8 +101,8 @@ class CutNet(torch.nn.Module):
         self.feature_model = MLP(
             3,
             h,
-            torch.nn.LeakyReLU(0.001),
-            torch.nn.LeakyReLU(0.001),
+            torch.nn.LeakyReLU(0.01),
+            torch.nn.LeakyReLU(0.01),
             n_hidden_layers,
             h,
         )
@@ -101,7 +110,7 @@ class CutNet(torch.nn.Module):
         self.offset_model = MLP(
             h + 3,
             3,
-            torch.nn.LeakyReLU(0.001),
+            torch.nn.LeakyReLU(0.01),
             torch.nn.Identity(),
             n_hidden_layers,
             h,
@@ -112,13 +121,18 @@ class CutNet(torch.nn.Module):
 
 
 class UnwrapNet(torch.nn.Module):
-    def __init__(self, h: int, n_hidden_layers: int):
+    def __init__(
+        self,
+        h: int,
+        n_hidden_layers: int,
+        output_activation: torch.nn.Module = torch.nn.Identity(),
+    ):
         super().__init__()
         self.model = MLP(
             3,
             2,
-            torch.nn.LeakyReLU(0.001),
-            torch.nn.Identity(),
+            torch.nn.LeakyReLU(0.01),
+            output_activation,
             n_hidden_layers,
             h,
         )

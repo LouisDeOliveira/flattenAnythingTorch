@@ -8,12 +8,20 @@ from omegaconf import DictConfig
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import trange
 
-from loss import CycleLoss, UnwrappingLoss, WrappingLoss
+from loss import CycleLoss, DiffLoss, UnwrappingLoss, WrappingLoss
 from mesh import Mesh
 from model import CutNet, DeformNet, UnwrapNet, WrapNet
 from utils import generate_checkerboard_pcd_uv
 
-AVAILABLE_MESHES = ["nefertiti", "bunny", "armadillo", "beetle", "hand", "dragon"]
+AVAILABLE_MESHES = [
+    "nefertiti",
+    "bunny",
+    "armadillo",
+    "beetle",
+    "hand",
+    "dragon",
+    "teapot",
+]
 
 
 def load_mesh(mesh_name: str) -> Mesh:
@@ -36,6 +44,13 @@ def uv_bounding_box_normalization(uv_points: torch.Tensor) -> torch.Tensor:
     uv_points = uv_points / max_d
 
     return uv_points
+
+
+def rescale_to_1(uv_points: torch.Tensor) -> torch.Tensor:
+    max_ = torch.max(uv_points)
+    min_ = torch.min(uv_points)
+
+    return (uv_points - min_) / (max_ - min_)
 
 
 @hydra.main(config_path="./config", config_name="FAconf", version_base="1.3")
@@ -79,7 +94,7 @@ def train(cfg: DictConfig):
         eps=(2 / (math.ceil(math.sqrt(n_samples)) - 1)) * 0.25, K=8
     )
     loss_cycle = CycleLoss()
-
+    loss_diff = DiffLoss(alpha_stretch=0.0)
     t = trange(n_iters, leave=True)
     for it in t:
         optimizer.zero_grad()
@@ -101,10 +116,11 @@ def train(cfg: DictConfig):
 
         q_h_c = Mu(p_h_cut)  # unwrap
 
-        q = uv_bounding_box_normalization(q).squeeze()
-        q_h = uv_bounding_box_normalization(q_h).squeeze()
-        q_h_c = uv_bounding_box_normalization(q_h_c).squeeze()
+        # q = uv_bounding_box_normalization(q).squeeze()
+        # q_h = uv_bounding_box_normalization(q_h).squeeze()
+        # q_h_c = uv_bounding_box_normalization(q_h_c).squeeze()
 
+        # l_diff = loss_diff(p_c, q)
         l_wrap = loss_wrap(p_h, p)
         l_unwrap = loss_unwrap(q) + loss_unwrap(q_h) + loss_unwrap(q_h_c)
         l_cycle_p, l_cycle_q, l_cycle_n = loss_cycle(p, p_c, q_h, q_h_c, p_n, p_n_c)
@@ -115,6 +131,7 @@ def train(cfg: DictConfig):
             + 0.01 * l_cycle_p
             + 0.01 * l_cycle_q
             + 0.005 * l_cycle_n
+            # + 0.01 * l_diff
         )
 
         if log:
@@ -123,6 +140,7 @@ def train(cfg: DictConfig):
             writer.add_scalar("l_cycle_p", l_cycle_p.item(), global_step=it)
             writer.add_scalar("l_cycle_q", l_cycle_q.item(), global_step=it)
             writer.add_scalar("l_cycle_n", l_cycle_n.item(), global_step=it)
+            # writer.add_scalar("l_diff", l_diff.item(), global_step=it)
             writer.add_scalar("weighted loss", loss.item(), global_step=it)
 
         t.set_description(f"loss={loss.item():.5f}")
@@ -133,10 +151,14 @@ def train(cfg: DictConfig):
 
         if it > 0 and (it % cfg.checkpoint_freq == 0 or it == n_iters - 1) and log:
             with torch.no_grad():
-                pcd = mesh.sample_mesh(5000)
+                pcd = mesh.vertices
                 cut_mesh = Mc(pcd)
                 Mesh.write_pcd(cut_mesh, f"./cut_mesh_{it}.ply")
                 mesh_uvs = Mu(cut_mesh)
+                mesh_uvs = uv_bounding_box_normalization(mesh_uvs)
+                mesh_uvs = rescale_to_1(mesh_uvs)
+                mesh.set_uvs(mesh_uvs)
+                mesh.generate_normal_map(256, f"./normal_map_{it}.png", k=8)
                 generate_checkerboard_pcd_uv(pcd, mesh_uvs, it)
 
 
