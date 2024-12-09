@@ -14,21 +14,33 @@ from model import CutNet, DeformNet, UnwrapNet, WrapNet
 from utils import generate_checkerboard_pcd_uv
 
 AVAILABLE_MESHES = [
-    "nefertiti",
-    "bunny",
-    "armadillo",
-    "beetle",
-    "hand",
-    "dragon",
-    "teapot",
-    "cow  ",
+    "nefertiti.obj",
+    "bunny.obj",
+    "armadillo.obj",
+    "beetle.obj",
+    "hand.obj",
+    "dragon.obj",
+    "teapot.obj",
+    "cow.obj",
+    "tablier_lod.ply",
+    "rocker-arm.obj",
+    "statue.ply",
 ]
 
 
 def load_mesh(mesh_name: str) -> Mesh:
 
     if mesh_name in AVAILABLE_MESHES:
-        return Mesh.from_file(to_absolute_path(f"./data/{mesh_name}.obj"))
+
+        if mesh_name == "tablier_lod.ply":
+            transform = Mesh.read_transform_from_txt(
+                to_absolute_path(f"./data/frame.txt")
+            )
+            mesh = Mesh.from_file(to_absolute_path(f"./data/{mesh_name}"))
+            mesh.apply_transform(transform)
+            return mesh
+
+        return Mesh.from_file(to_absolute_path(f"./data/{mesh_name}"))
 
     else:
         print("mesh not found, using nefertiti as default...")
@@ -165,7 +177,7 @@ def train(cfg: DictConfig):
                 mesh_uvs = Mu(cut_mesh)
                 mesh_uvs = rescale_to_1(mesh_uvs)
                 mesh.set_uvs(mesh_uvs)
-                mesh.generate_normal_map(256, f"./normal_map_{it}.png", k=3)
+                mesh.generate_normal_map(512, f"./normal_map_{it}.png", k=3)
                 generate_checkerboard_pcd_uv(pcd, mesh_uvs, it)
 
 

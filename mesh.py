@@ -451,7 +451,8 @@ class Mesh:
         self.vertex_normals = self.vertex_normals @ R.T + T
         self.vertex_normals = torch.nn.functional.normalize(self.vertex_normals, dim=1)
 
-    def read_transform_from_txt(self, txt_path: str) -> torch.Tensor:
+    @staticmethod
+    def read_transform_from_txt(txt_path: str, device: str = "cuda") -> torch.Tensor:
         """
         Reads a transform matrix from a txt file from a coupole scan.
         returns 4x4 tensor
@@ -461,7 +462,7 @@ class Mesh:
 
         transform = torch.tensor(
             np.array(data).astype(np.float32).reshape(4, 4),
-            device=self.device,
+            device=device,
         )
 
         return transform
@@ -516,6 +517,57 @@ class Mesh:
         normals = self.sample_smooth_normals(faces, barycenters).cpu().numpy()
         uvs = self.sample_uvs_from_barycenters(faces, barycenters).cpu().numpy()
 
+        texture = np.zeros((size, size, 3), dtype=np.float32)
+        weights_map = np.zeros((size, size), dtype=np.float32)
+
+        for uv, normal in zip(uvs, normals):
+            u, v = uv
+
+            x = u * (size - 1)
+            y = (1 - v) * (size - 1)  # Flip V for image coordinates
+
+            x0 = int(np.floor(x))
+            y0 = int(np.floor(y))
+            x1 = min(x0 + 1, size - 1)
+            y1 = min(y0 + 1, size - 1)
+
+            dx = x - x0
+            dy = y - y0
+
+            weights = {
+                (x0, y0): (1 - dx) * (1 - dy),
+                (x1, y0): dx * (1 - dy),
+                (x0, y1): (1 - dx) * dy,
+                (x1, y1): dx * dy,
+            }
+
+            for (x, y), weight in weights.items():
+                texture[y, x] += weight * normal
+                weights_map[y, x] += weight
+
+        weights_map[weights_map == 0.0] = 1.0
+        weights_map = weights_map[..., np.newaxis]
+        texture = texture / weights_map
+
+        texture = (texture + 1.0) / 2.0
+
+        if output_path is not None:
+            texture_uint = (texture * 255.0).astype(np.uint8)
+            Image.fromarray(texture_uint, mode="RGB").save(output_path)
+
+        return texture
+
+    @staticmethod
+    def generate_normal_map_from_samples(
+        uvs: torch.Tensor, normals: torch.Tensor, size: int, output_path: str = None
+    ) -> None:
+        """
+        Bakes the normals of the mesh into a texture by sampling each face randomly k times
+        and interpolating the normals.
+
+        """
+        uvs = uvs.cpu().numpy()
+        normals = normals.cpu().numpy()
         texture = np.zeros((size, size, 3), dtype=np.float32)
         weights_map = np.zeros((size, size), dtype=np.float32)
 
