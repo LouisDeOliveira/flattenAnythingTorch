@@ -20,11 +20,16 @@ AVAILABLE_MESHES = [
     "beetle.obj",
     "hand.obj",
     "dragon.obj",
+    "dragon.ply",
     "teapot.obj",
     "cow.obj",
     "tablier_lod.ply",
     "rocker-arm.obj",
     "statue.ply",
+    "horse.obj",
+    "double-torus.obj",
+    "lucy.obj",
+    "elephant.obj",
 ]
 
 
@@ -89,6 +94,7 @@ def train(cfg: DictConfig):
     Mu = UnwrapNet(h, n_hidden_layers, torch.nn.Identity()).to("cuda")
 
     mesh = load_mesh(cfg.dataset)
+    mesh.compute_normalization_params()
     mesh.normalize_mesh()
 
     optimizer = torch.optim.AdamW(
@@ -132,10 +138,6 @@ def train(cfg: DictConfig):
         q_h_normalized = uv_bounding_box_normalization(q_h).squeeze()
         q_h_c_normalized = uv_bounding_box_normalization(q_h_c).squeeze()
 
-        q_normalized = q
-        q_h_normalized = q_h
-        q_h_c_normalized = q_h_c
-
         l_diff = loss_diff(p_c, q)
         l_wrap = loss_wrap(p_h, p)
         l_unwrap = (
@@ -151,7 +153,7 @@ def train(cfg: DictConfig):
             + 0.01 * l_cycle_p
             + 0.01 * l_cycle_q
             + 0.005 * l_cycle_n
-            + 0.1 * l_diff
+            + 0.00 * l_diff
         )
         # TODO: loss coeffs
         if log:
