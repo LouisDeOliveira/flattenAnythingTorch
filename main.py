@@ -13,39 +13,19 @@ from mesh import Mesh
 from model import CutNet, DeformNet, UnwrapNet, WrapNet
 from utils import generate_checkerboard_pcd_uv
 
-AVAILABLE_MESHES = [
-    "nefertiti.obj",
-    "bunny.obj",
-    "armadillo.obj",
-    "beetle.obj",
-    "hand.obj",
-    "dragon.obj",
-    "dragon.ply",
-    "teapot.obj",
-    "cow.obj",
-    "tablier_lod.ply",
-    "rocker-arm.obj",
-    "statue.ply",
-    "horse.obj",
-    "double-torus.obj",
-    "lucy.obj",
-    "elephant.obj",
-]
-
 
 def load_mesh(mesh_name: str) -> Mesh:
 
-    if mesh_name in AVAILABLE_MESHES:
+    if os.path.exists(path := to_absolute_path(f"./data/{mesh_name}")):
 
         if mesh_name == "tablier_lod.ply":
             transform = Mesh.read_transform_from_txt(
                 to_absolute_path(f"./data/frame.txt")
             )
-            mesh = Mesh.from_file(to_absolute_path(f"./data/{mesh_name}"))
+            mesh = Mesh.from_file(path)
             mesh.apply_transform(transform)
             return mesh
-
-        return Mesh.from_file(to_absolute_path(f"./data/{mesh_name}"))
+        return Mesh.from_file(path)
 
     else:
         print("mesh not found, using nefertiti as default...")
