@@ -5,7 +5,7 @@ hydra:
 n_samples: 1000
 n_steps: 50000
 checkpoint_freq: 500
-dataset: "vase.obj"
+dataset: "double-torus.obj"
 log: true
 
 models:

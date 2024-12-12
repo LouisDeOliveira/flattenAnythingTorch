@@ -45,7 +45,7 @@ class DeformNet(torch.nn.Module):
             2,
             h,
             torch.nn.LeakyReLU(0.01),
-            torch.nn.LeakyReLU(0.01),
+            torch.nn.Identity(),
             n_hidden_layers,
             h,
         )
@@ -74,7 +74,7 @@ class WrapNet(torch.nn.Module):
             2,
             h,
             torch.nn.LeakyReLU(0.01),
-            torch.nn.LeakyReLU(0.01),
+            torch.nn.Identity(),
             n_hidden_layers,
             h,
         )
@@ -102,7 +102,7 @@ class CutNet(torch.nn.Module):
             3,
             h,
             torch.nn.LeakyReLU(0.01),
-            torch.nn.LeakyReLU(0.01),
+            torch.nn.Identity(),
             n_hidden_layers,
             h,
         )

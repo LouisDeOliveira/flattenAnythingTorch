@@ -45,10 +45,12 @@ def uv_bounding_box_normalization(uv_points: torch.Tensor) -> torch.Tensor:
 
 
 def rescale_to_1(uv_points: torch.Tensor) -> torch.Tensor:
-    max_ = torch.max(uv_points)
-    min_ = torch.min(uv_points)
+    min_u = torch.min(uv_points[:, 0]).unsqueeze(0)
+    min_v = torch.min(uv_points[:, 1]).unsqueeze(0)
 
-    return (uv_points - min_) / (max_ - min_)
+    min_uv = torch.cat([min_u, min_v], dim=0)
+    uv_points = uv_points - min_uv
+    return uv_points / torch.max(uv_points)
 
 
 @hydra.main(config_path="./config", config_name="FAconf", version_base="1.3")
@@ -133,7 +135,7 @@ def train(cfg: DictConfig):
             + 0.01 * l_cycle_p
             + 0.01 * l_cycle_q
             + 0.005 * l_cycle_n
-            + 0.00 * l_diff
+            + 0.01 * l_diff
         )
         # TODO: loss coeffs
         if log:
