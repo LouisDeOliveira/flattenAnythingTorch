@@ -173,7 +173,9 @@ class Mesh:
                     else None
                 ),
             )
-            mesh.visual = trimesh.visual.TextureVisuals(self.uvs)
+
+            if self.uvs is not None:
+                mesh.visual = trimesh.visual.TextureVisuals(self.uvs.cpu().numpy())
             mesh.export(file_path)
 
         elif file_path[-3::] == "ply":
@@ -513,7 +515,7 @@ class Mesh:
         """
         n = self.faces.shape[0]
         barycenters = self.random_barycentric(k * n)
-        faces = torch.arange(0, k * n, device="cuda") % n
+        faces = torch.arange(0, k * n, device=self.device) % n
         normals = self.sample_smooth_normals(faces, barycenters).cpu().numpy()
         uvs = self.sample_uvs_from_barycenters(faces, barycenters).cpu().numpy()
 
@@ -557,56 +559,71 @@ class Mesh:
 
         return texture
 
-    @staticmethod
-    def generate_normal_map_from_samples(
-        uvs: torch.Tensor, normals: torch.Tensor, size: int, output_path: str = None
-    ) -> None:
+    def get_AABB(self) -> torch.Tensor:
+        min_, _ = torch.min(self.vertices, dim=0)
+        max_, _ = torch.max(self.vertices, dim=0)
+
+        return torch.stack([min_, max_], dim=0)
+
+    def tessellate(
+        self,
+    ):
         """
-        Bakes the normals of the mesh into a texture by sampling each face randomly k times
-        and interpolating the normals.
+        Tessellate a mesh by splitting each triangular face into four smaller triangles.
 
+        Args:
+            vertices (torch.Tensor): Tensor of shape [N, 3], vertex coordinates.
+            faces (torch.Tensor): Tensor of shape [M, 3], face indices.
+            attributes (torch.Tensor): Tensor of shape [N, D], optional vertex attributes.
+
+        Returns:
+            torch.Tensor: New vertices, shape [N', 3].
+            torch.Tensor: New faces, shape [M', 3].
+            torch.Tensor: New attributes, shape [N', D] (if attributes are provided).
         """
-        uvs = uvs.cpu().numpy()
-        normals = normals.cpu().numpy()
-        texture = np.zeros((size, size, 3), dtype=np.float32)
-        weights_map = np.zeros((size, size), dtype=np.float32)
+        # Extract vertex indices of each face
+        v0, v1, v2 = self.faces[:, 0], self.faces[:, 1], self.faces[:, 2]
 
-        for uv, normal in zip(uvs, normals):
-            u, v = uv
+        # Compute midpoints for each edge
+        edge01 = (self.vertices[v0] + self.vertices[v1]) / 2  # Midpoint of edge v0-v1
+        edge12 = (self.vertices[v1] + self.vertices[v2]) / 2  # Midpoint of edge v1-v2
+        edge20 = (self.vertices[v2] + self.vertices[v0]) / 2  # Midpoint of edge v2-v0
 
-            x = u * (size - 1)
-            y = (1 - v) * (size - 1)  # Flip V for image coordinates
+        # Combine vertices and edge midpoints
+        new_vertices = torch.cat([self.vertices, edge01, edge12, edge20], dim=0)
 
-            x0 = int(np.floor(x))
-            y0 = int(np.floor(y))
-            x1 = min(x0 + 1, size - 1)
-            y1 = min(y0 + 1, size - 1)
+        # Deduplicate vertices and find new indices
+        new_vertices, inverse_indices = torch.unique(
+            new_vertices, dim=0, return_inverse=True
+        )
 
-            dx = x - x0
-            dy = y - y0
+        # Map old vertices and midpoints to their new indices
+        num_original = self.vertices.size(0)
+        edge01_idx = inverse_indices[num_original : num_original + len(edge01)]
+        edge12_idx = inverse_indices[
+            num_original + len(edge01) : num_original + len(edge01) + len(edge12)
+        ]
+        edge20_idx = inverse_indices[num_original + len(edge01) + len(edge12) :]
 
-            weights = {
-                (x0, y0): (1 - dx) * (1 - dy),
-                (x1, y0): dx * (1 - dy),
-                (x0, y1): (1 - dx) * dy,
-                (x1, y1): dx * dy,
-            }
+        v0_new = inverse_indices[v0]
+        v1_new = inverse_indices[v1]
+        v2_new = inverse_indices[v2]
 
-            for (x, y), weight in weights.items():
-                texture[y, x] += weight * normal
-                weights_map[y, x] += weight
+        # Create new faces
+        new_faces = torch.cat(
+            [
+                torch.stack([v0_new, edge01_idx, edge20_idx], dim=1),
+                torch.stack([v1_new, edge12_idx, edge01_idx], dim=1),
+                torch.stack([v2_new, edge20_idx, edge12_idx], dim=1),
+                torch.stack([edge01_idx, edge12_idx, edge20_idx], dim=1),
+            ],
+            dim=0,
+        )
 
-        weights_map[weights_map == 0.0] = 1.0
-        weights_map = weights_map[..., np.newaxis]
-        texture = texture / weights_map
+        # TODO: manage attributes
 
-        texture = (texture + 1.0) / 2.0
-
-        if output_path is not None:
-            texture_uint = (texture * 255.0).astype(np.uint8)
-            Image.fromarray(texture_uint, mode="RGB").save(output_path)
-
-        return texture
+        self.vertices = new_vertices
+        self.faces = new_faces
 
 
 if __name__ == "__main__":

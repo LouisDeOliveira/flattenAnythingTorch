@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import trimesh
 
+import PIL.Image as Image
 from mesh import Mesh
 
 
@@ -112,3 +113,54 @@ def generate_checkerboard_pcd_uv(
 
     Mesh.write_pcd(points, f"./test_checker_{step}.obj", vertex_colors)
     Mesh.write_pcd(points, f"./test_uv_{step}.obj", uv_vertex_colors)
+
+
+def generate_normal_map_from_samples(
+    uvs: torch.Tensor, normals: torch.Tensor, size: int, output_path: str = None
+) -> None:
+    """
+    Bakes the normals of the mesh into a texture by sampling each face randomly k times
+    and interpolating the normals.
+
+    """
+    uvs = uvs.cpu().numpy()
+    normals = normals.cpu().numpy()
+    texture = np.zeros((size, size, 3), dtype=np.float32)
+    weights_map = np.zeros((size, size), dtype=np.float32)
+
+    for uv, normal in zip(uvs, normals):
+        u, v = uv
+
+        x = u * (size - 1)
+        y = (1 - v) * (size - 1)  # Flip V for image coordinates
+
+        x0 = int(np.floor(x))
+        y0 = int(np.floor(y))
+        x1 = min(x0 + 1, size - 1)
+        y1 = min(y0 + 1, size - 1)
+
+        dx = x - x0
+        dy = y - y0
+
+        weights = {
+            (x0, y0): (1 - dx) * (1 - dy),
+            (x1, y0): dx * (1 - dy),
+            (x0, y1): (1 - dx) * dy,
+            (x1, y1): dx * dy,
+        }
+
+        for (x, y), weight in weights.items():
+            texture[y, x] += weight * normal
+            weights_map[y, x] += weight
+
+    weights_map[weights_map == 0.0] = 1.0
+    weights_map = weights_map[..., np.newaxis]
+    texture = texture / weights_map
+
+    texture = (texture + 1.0) / 2.0
+
+    if output_path is not None:
+        texture_uint = (texture * 255.0).astype(np.uint8)
+        Image.fromarray(texture_uint, mode="RGB").save(output_path)
+
+    return texture

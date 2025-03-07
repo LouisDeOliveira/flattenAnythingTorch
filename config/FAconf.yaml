@@ -2,10 +2,10 @@ hydra:
   job:
     chdir: true
 
-n_samples: 1000
-n_steps: 50000
-checkpoint_freq: 500
-dataset: "double-torus.obj"
+n_samples: 2500
+n_steps: 5000
+checkpoint_freq: 1000
+dataset: "tablier_sample.ply"
 log: true
 
 models:

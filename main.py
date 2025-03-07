@@ -18,7 +18,7 @@ def load_mesh(mesh_name: str) -> Mesh:
 
     if os.path.exists(path := to_absolute_path(f"./data/{mesh_name}")):
 
-        if mesh_name == "tablier_lod.ply":
+        if "tablier" in mesh_name:
             transform = Mesh.read_transform_from_txt(
                 to_absolute_path(f"./data/frame.txt")
             )
@@ -33,12 +33,9 @@ def load_mesh(mesh_name: str) -> Mesh:
 
 
 def uv_bounding_box_normalization(uv_points: torch.Tensor) -> torch.Tensor:
-    # uv_points: [B, N, 2]
-    centroids = ((uv_points.min(dim=0)[0] + uv_points.max(dim=0)[0]) / 2).unsqueeze(
-        0
-    )  # [B, 1, 2]
+    centroids = ((uv_points.min(dim=0)[0] + uv_points.max(dim=0)[0]) / 2).unsqueeze(0)
     uv_points = uv_points - centroids
-    max_d = (uv_points**2).sum(dim=-1).sqrt().max(dim=-1)[0]  # [B, 1, 1]
+    max_d = (uv_points**2).sum(dim=-1).sqrt().max(dim=-1)[0]
     uv_points = uv_points / max_d
 
     return uv_points
@@ -59,7 +56,7 @@ def train(cfg: DictConfig):
     # set_all_seeds(42)
 
     h = cfg.models.hidden_size
-    n_hidden_layers = cfg.models.n_hidden_layers
+    n_h = cfg.models.n_hidden_layers
 
     n_iters = cfg.n_steps
     n_samples = cfg.n_samples
@@ -70,10 +67,10 @@ def train(cfg: DictConfig):
             hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
         )
 
-    Md = DeformNet(h, n_hidden_layers, torch.nn.Identity()).to("cuda")
-    Mw = WrapNet(h, n_hidden_layers).to("cuda")
-    Mc = CutNet(h, n_hidden_layers).to("cuda")
-    Mu = UnwrapNet(h, n_hidden_layers, torch.nn.Identity()).to("cuda")
+    Md = DeformNet(h, n_h, torch.nn.Identity()).to("cuda")
+    Mw = WrapNet(h, n_h).to("cuda")
+    Mc = CutNet(h, n_h).to("cuda")
+    Mu = UnwrapNet(h, n_h, torch.nn.Identity()).to("cuda")
 
     mesh = load_mesh(cfg.dataset)
     mesh.compute_normalization_params()
@@ -88,7 +85,8 @@ def train(cfg: DictConfig):
         weight_decay=1e-8,
     )
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_iters, 1e-5)
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_iters, 1e-5)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, 0.999)
 
     loss_wrap = WrappingLoss()
     loss_unwrap = UnwrappingLoss(
@@ -120,6 +118,10 @@ def train(cfg: DictConfig):
         q_h_normalized = uv_bounding_box_normalization(q_h).squeeze()
         q_h_c_normalized = uv_bounding_box_normalization(q_h_c).squeeze()
 
+        # q_normalized = q
+        # q_h_normalized = q_h
+        # q_h_c_normalized = q_h_c
+
         l_diff = loss_diff(p_c, q)
         l_wrap = loss_wrap(p_h, p)
         l_unwrap = (
@@ -135,7 +137,7 @@ def train(cfg: DictConfig):
             + 0.01 * l_cycle_p
             + 0.01 * l_cycle_q
             + 0.005 * l_cycle_n
-            + 0.01 * l_diff
+            + 0.0 * l_diff
         )
         # TODO: loss coeffs
         if log:
@@ -161,7 +163,7 @@ def train(cfg: DictConfig):
                 mesh_uvs = Mu(cut_mesh)
                 mesh_uvs = rescale_to_1(mesh_uvs)
                 mesh.set_uvs(mesh_uvs)
-                mesh.generate_normal_map(512, f"./normal_map_{it}.png", k=3)
+                mesh.generate_normal_map(512, f"./normal_map_{it}.png", k=1)
                 generate_checkerboard_pcd_uv(pcd, mesh_uvs, it)
 
 
