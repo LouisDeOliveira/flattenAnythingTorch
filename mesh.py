@@ -182,21 +182,23 @@ class Mesh:
             vertices = self.vertices.cpu().numpy()
             vertex_normals = self.vertex_normals.cpu().numpy()
             faces = self.faces.cpu().numpy()
-            uvs = self.uvs.cpu().numpy()
 
-            dtype_full = [
-                ("x", "f4"),
-                ("y", "f4"),
-                ("z", "f4"),
-                ("nx", "f4"),
-                ("ny", "f4"),
-                ("nz", "f4"),
-                ("u", "f4"),
-                ("v", "f4"),
-            ]
+            if self.uvs is not None:
+                uvs = self.uvs.cpu().numpy()
+                dtype_full = [
+                    ("x", "f4"), ("y", "f4"), ("z", "f4"),
+                    ("nx", "f4"), ("ny", "f4"), ("nz", "f4"),
+                    ("u", "f4"), ("v", "f4"),
+                ]
+                v_attributes = np.concatenate((vertices, vertex_normals, uvs), axis=1)
+            else:
+                dtype_full = [
+                    ("x", "f4"), ("y", "f4"), ("z", "f4"),
+                    ("nx", "f4"), ("ny", "f4"), ("nz", "f4"),
+                ]
+                v_attributes = np.concatenate((vertices, vertex_normals), axis=1)
 
             v_elements = np.empty(vertices.shape[0], dtype=dtype_full)
-            v_attributes = np.concatenate((vertices, vertex_normals, uvs), axis=1)
             v_elements[:] = list(map(tuple, v_attributes))
 
             faces = np.array(

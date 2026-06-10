@@ -1,4 +1,3 @@
-import math
 import os
 
 import hydra
@@ -15,62 +14,50 @@ from utils import generate_checkerboard_pcd_uv
 
 
 def load_mesh(mesh_name: str) -> Mesh:
-
     if os.path.exists(path := to_absolute_path(f"./data/{mesh_name}")):
-
         if "tablier" in mesh_name:
             transform = Mesh.read_transform_from_txt(
-                to_absolute_path(f"./data/frame.txt")
+                to_absolute_path("./data/frame.txt")
             )
             mesh = Mesh.from_file(path)
             mesh.apply_transform(transform)
             return mesh
         return Mesh.from_file(path)
 
-    else:
-        print("mesh not found, using nefertiti as default...")
-        return Mesh.from_file(to_absolute_path(f"./data/nefertiti.obj"))
+    print("mesh not found, using nefertiti as default...")
+    return Mesh.from_file(to_absolute_path("./data/nefertiti.obj"))
 
 
 def uv_bounding_box_normalization(uv_points: torch.Tensor) -> torch.Tensor:
     centroids = ((uv_points.min(dim=0)[0] + uv_points.max(dim=0)[0]) / 2).unsqueeze(0)
     uv_points = uv_points - centroids
-    max_d = (uv_points**2).sum(dim=-1).sqrt().max(dim=-1)[0]
-    uv_points = uv_points / max_d
-
-    return uv_points
+    max_d = (uv_points**2).sum(dim=-1).sqrt().max()
+    return uv_points / max_d
 
 
 def rescale_to_1(uv_points: torch.Tensor) -> torch.Tensor:
-    min_u = torch.min(uv_points[:, 0]).unsqueeze(0)
-    min_v = torch.min(uv_points[:, 1]).unsqueeze(0)
-
-    min_uv = torch.cat([min_u, min_v], dim=0)
+    min_uv = torch.stack([uv_points[:, 0].min(), uv_points[:, 1].min()])
     uv_points = uv_points - min_uv
-    return uv_points / torch.max(uv_points)
+    return uv_points / uv_points.max()
 
 
 @hydra.main(config_path="./config", config_name="FAconf", version_base="1.3")
 def train(cfg: DictConfig):
     print(cfg)
-    # set_all_seeds(42)
-
-    h = cfg.models.hidden_size
-    n_h = cfg.models.n_hidden_layers
 
     n_iters = cfg.n_steps
     n_samples = cfg.n_samples
-
     log = cfg.log
+
     if log:
         writer = SummaryWriter(
             hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
         )
 
-    Md = DeformNet(h, n_h, torch.nn.Identity()).to("cuda")
-    Mw = WrapNet(h, n_h).to("cuda")
-    Mc = CutNet(h, n_h).to("cuda")
-    Mu = UnwrapNet(h, n_h, torch.nn.Identity()).to("cuda")
+    Md = DeformNet().to("cuda")
+    Mw = WrapNet().to("cuda")
+    Mc = CutNet().to("cuda")
+    Mu = UnwrapNet().to("cuda")
 
     mesh = load_mesh(cfg.dataset)
     mesh.compute_normalization_params()
@@ -85,15 +72,13 @@ def train(cfg: DictConfig):
         weight_decay=1e-8,
     )
 
-    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, n_iters, 1e-5)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, 0.999)
 
-    loss_wrap = WrappingLoss()
-    loss_unwrap = UnwrappingLoss(
-        eps=(2 / (math.ceil(math.sqrt(n_samples)) - 1)) * 0.25, K=8
-    )
+    loss_wrap = WrappingLoss(chunk_size=cfg.get("chamfer_chunk_size", None))
+    loss_unwrap = UnwrappingLoss(K=8, max_pts=cfg.get("unwrap_max_pts", None))
     loss_cycle = CycleLoss()
-    loss_diff = DiffLoss(alpha_stretch=1.0)
+    loss_diff = DiffLoss()
+
     t = trange(n_iters, leave=True)
     for it in t:
         optimizer.zero_grad()
@@ -101,57 +86,83 @@ def train(cfg: DictConfig):
         barycenters = mesh.random_barycentric(n_samples)
         faces = mesh.sample_faces(n_samples)
         p = mesh.sample_from_barycenters(faces, barycenters)
-        g = torch.rand((n_samples, 2), device="cuda")
         p_n = mesh.sample_smooth_normals(faces, barycenters)
 
-        p_cut = Mc(p)  # cut
-        q = Mu(p_cut)  # unwrap
-        p_c, p_n_c = Mw(q)  # wrap
+        # G is uniformly sampled in [-1, 1]^2 per paper Section 3.1.1
+        g = torch.rand((n_samples, 2), device="cuda") * 2 - 1
 
-        q_h = Md(g)  # deform
-        p_h, p_n_h = Mw(q_h)  # wrap
-        p_h_cut = Mc(p_h)  # cut
+        # ── 3D → 2D → 3D branch ──────────────────────────────────────────
+        p_cut = Mc(p)
+        q = Mu(p_cut)
+        p_c, p_n_c = Mw(q)  # full graph — cycle loss trains Mc, Mu, Mw
 
-        q_h_c = Mu(p_h_cut)  # unwrap
+        # ── 2D → 3D → 2D branch ──────────────────────────────────────────
+        q_h = Md(g)
+        p_h, _ = Mw(q_h)  # full graph — wrap loss trains Md, Mw
+        p_h_cut = Mc(p_h)
+        q_h_c = Mu(p_h_cut)  # full graph — cycle loss trains Md, Mw, Mc, Mu
 
-        q_normalized = uv_bounding_box_normalization(q).squeeze()
-        q_h_normalized = uv_bounding_box_normalization(q_h).squeeze()
-        q_h_c_normalized = uv_bounding_box_normalization(q_h_c).squeeze()
+        # ── Extra WrapNet forward with leaf UV tensors for DiffLoss ──────
+        # Detach so the Jacobian is purely of WrapNet (no higher-order paths).
+        # Optionally subsample: 3×autograd.grad passes per Jacobian are expensive.
+        n_diff = cfg.get("n_diff_samples", None)
+        if n_diff is not None and n_diff < n_samples:
+            diff_idx = torch.randperm(n_samples, device="cuda")[:n_diff]
+            q_jac = q[diff_idx].detach().requires_grad_(True)
+            q_h_jac = q_h[diff_idx].detach().requires_grad_(True)
+        else:
+            q_jac = q.detach().requires_grad_(True)
+            q_h_jac = q_h.detach().requires_grad_(True)
+        p_c_jac, _ = Mw(q_jac)
+        p_h_jac, _ = Mw(q_h_jac)
 
-        # q_normalized = q
-        # q_h_normalized = q_h
-        # q_h_c_normalized = q_h_c
+        q_normalized = uv_bounding_box_normalization(q)
+        q_h_normalized = uv_bounding_box_normalization(q_h)
+        q_h_c_normalized = uv_bounding_box_normalization(q_h_c)
 
-        l_diff = loss_diff(p_c, q)
+        # ── Losses ───────────────────────────────────────────────────────
         l_wrap = loss_wrap(p_h, p)
+
         l_unwrap = (
             loss_unwrap(q_normalized)
             + loss_unwrap(q_h_normalized)
             + loss_unwrap(q_h_c_normalized)
         )
-        l_cycle_p, l_cycle_q, l_cycle_n = loss_cycle(p, p_c, q_h, q_h_c, p_n, p_n_c)
 
+        l_cycle_p, l_cycle_q, l_cycle_n = loss_cycle(p, p_c, q_h, q_h_c, p_n, p_n_c)
+        l_cycle = l_cycle_p + l_cycle_q + l_cycle_n
+
+        # Conformality: Jacobian of WrapNet at Q and Q_hat (paper Eq. 12-13).
+        # Warm up over first 20% of training so the mapping has time to form
+        # before the Jacobian regulariser kicks in (avoids early instability).
+        conf_weight = 0.01 * min(1.0, it / (0.2 * n_iters))
+        l_conf = loss_diff(p_c_jac, q_jac, p_h_jac, q_h_jac)
+
+        # Weights from paper Appendix A.1
         loss: torch.Tensor = (
-            l_wrap
-            + 0.01 * l_unwrap
-            + 0.01 * l_cycle_p
-            + 0.01 * l_cycle_q
-            + 0.005 * l_cycle_n
-            + 0.0 * l_diff
+            1.0 * l_wrap + 0.01 * l_unwrap + 0.01 * l_cycle + conf_weight * l_conf
         )
-        # TODO: loss coeffs
+
         if log:
             writer.add_scalar("l_wrap", l_wrap.item(), global_step=it)
             writer.add_scalar("l_unwrap", l_unwrap.item(), global_step=it)
             writer.add_scalar("l_cycle_p", l_cycle_p.item(), global_step=it)
             writer.add_scalar("l_cycle_q", l_cycle_q.item(), global_step=it)
             writer.add_scalar("l_cycle_n", l_cycle_n.item(), global_step=it)
-            writer.add_scalar("l_diff", l_diff.item(), global_step=it)
-            writer.add_scalar("weighted loss", loss.item(), global_step=it)
+            writer.add_scalar("l_conf", l_conf.item(), global_step=it)
+            writer.add_scalar("conf_weight", conf_weight, global_step=it)
+            writer.add_scalar("weighted_loss", loss.item(), global_step=it)
 
         t.set_description(f"loss={loss.item():.5f}")
 
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(
+            list(Md.parameters())
+            + list(Mw.parameters())
+            + list(Mc.parameters())
+            + list(Mu.parameters()),
+            max_norm=1.0,
+        )
         optimizer.step()
         scheduler.step()
 
@@ -159,12 +170,13 @@ def train(cfg: DictConfig):
             with torch.no_grad():
                 pcd = mesh.vertices
                 cut_mesh = Mc(pcd)
-                Mesh.write_pcd(cut_mesh, f"./cut_mesh_{it}.ply")
                 mesh_uvs = Mu(cut_mesh)
                 mesh_uvs = rescale_to_1(mesh_uvs)
                 mesh.set_uvs(mesh_uvs)
                 mesh.generate_normal_map(512, f"./normal_map_{it}.png", k=1)
-                generate_checkerboard_pcd_uv(pcd, mesh_uvs, it)
+
+                if it == n_iters - 1:
+                    mesh.to_file("./result.ply")
 
 
 if __name__ == "__main__":
