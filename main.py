@@ -68,11 +68,13 @@ def train(cfg: DictConfig):
         + list(Mw.parameters())
         + list(Mc.parameters())
         + list(Mu.parameters()),
-        lr=1e-3,
+        lr=5e-3,
         weight_decay=1e-8,
     )
 
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, 0.999)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=n_iters, eta_min=1e-5
+    )
 
     loss_wrap = WrappingLoss(chunk_size=cfg.get("chamfer_chunk_size", None))
     loss_unwrap = UnwrappingLoss(K=8, max_pts=cfg.get("unwrap_max_pts", None))
@@ -181,7 +183,8 @@ def train(cfg: DictConfig):
         mesh_uvs = Mu(cut_mesh)
         mesh_uvs = rescale_to_1(mesh_uvs)
         mesh.set_uvs(mesh_uvs)
-        mesh.to_file("./result.ply")
+        mesh.to_file("./result_wedge.ply", uv_mode="wedge")
+        mesh.to_file("./result_vertex.ply", uv_mode="vertex")
 
 
 if __name__ == "__main__":

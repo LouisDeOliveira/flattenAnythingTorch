@@ -156,10 +156,13 @@ class Mesh:
             device=device,
         )
 
-    def to_file(self, file_path: str):
+    def to_file(self, file_path: str, uv_mode: str = "wedge"):
         """
-        writes mesh to ply file
-        for now can only write vertices faces ands uvs.
+        Writes the mesh to a file.
+
+        uv_mode (ply only):
+          "wedge"  — per-face texcoord list; readable by MeshLab and Blender (default)
+          "vertex" — per-vertex s/t properties; readable by Blender only
         """
 
         if file_path[-3::] == "obj":
@@ -192,15 +195,25 @@ class Mesh:
             v_elements[:] = list(map(tuple, v_attributes))
             v = plyfile.PlyElement.describe(v_elements, "vertex")
 
-            if self.uvs is not None:
-                # Per-face wedge UVs: MeshLab and Blender both read this format.
+            if self.uvs is not None and uv_mode == "wedge":
                 uvs = self.uvs.cpu().numpy()
                 face_uvs = uvs[faces]  # [F, 3, 2]
-                texcoords = face_uvs.reshape(-1, 6).astype(np.float32)  # [F, 6]
+                texcoords = face_uvs.reshape(-1, 6).astype(np.float32)
                 face_dtype = [("vertex_indices", "i4", (3,)), ("texcoord", "f4", (6,))]
                 face_data = np.empty(faces.shape[0], dtype=face_dtype)
                 face_data["vertex_indices"] = faces
                 face_data["texcoord"] = texcoords
+            elif self.uvs is not None and uv_mode == "vertex":
+                uvs = self.uvs.cpu().numpy()
+                dtype_full.extend([("s", "f4"), ("t", "f4")])
+                v_attributes = np.concatenate((vertices, vertex_normals, uvs), axis=1)
+                v_elements = np.empty(vertices.shape[0], dtype=dtype_full)
+                v_elements[:] = list(map(tuple, v_attributes))
+                v = plyfile.PlyElement.describe(v_elements, "vertex")
+                face_dtype = [("vertex_indices", "i4", (3,))]
+                face_data = np.array(
+                    [tuple([face]) for face in faces.tolist()], dtype=face_dtype
+                )
             else:
                 face_dtype = [("vertex_indices", "i4", (3,))]
                 face_data = np.array(
