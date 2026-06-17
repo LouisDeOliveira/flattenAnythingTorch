@@ -5,7 +5,7 @@ hydra:
 n_samples: 10000
 n_steps: 5000
 checkpoint_freq: 500
-dataset: "armadillo.obj"
+dataset: "general.ply"
 log: true
 
 # Subsampling options — omit (or set to null) to disable each one

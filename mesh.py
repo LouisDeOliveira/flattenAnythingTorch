@@ -183,31 +183,31 @@ class Mesh:
             vertex_normals = self.vertex_normals.cpu().numpy()
             faces = self.faces.cpu().numpy()
 
-            if self.uvs is not None:
-                uvs = self.uvs.cpu().numpy()
-                dtype_full = [
-                    ("x", "f4"), ("y", "f4"), ("z", "f4"),
-                    ("nx", "f4"), ("ny", "f4"), ("nz", "f4"),
-                    ("u", "f4"), ("v", "f4"),
-                ]
-                v_attributes = np.concatenate((vertices, vertex_normals, uvs), axis=1)
-            else:
-                dtype_full = [
-                    ("x", "f4"), ("y", "f4"), ("z", "f4"),
-                    ("nx", "f4"), ("ny", "f4"), ("nz", "f4"),
-                ]
-                v_attributes = np.concatenate((vertices, vertex_normals), axis=1)
-
+            dtype_full = [
+                ("x", "f4"), ("y", "f4"), ("z", "f4"),
+                ("nx", "f4"), ("ny", "f4"), ("nz", "f4"),
+            ]
+            v_attributes = np.concatenate((vertices, vertex_normals), axis=1)
             v_elements = np.empty(vertices.shape[0], dtype=dtype_full)
             v_elements[:] = list(map(tuple, v_attributes))
-
-            faces = np.array(
-                [tuple([face]) for face in faces.tolist()],
-                dtype=[("vertex_indices", "i4", (3,))],
-            )
-
             v = plyfile.PlyElement.describe(v_elements, "vertex")
-            f = plyfile.PlyElement.describe(faces, "face")
+
+            if self.uvs is not None:
+                # Per-face wedge UVs: MeshLab and Blender both read this format.
+                uvs = self.uvs.cpu().numpy()
+                face_uvs = uvs[faces]  # [F, 3, 2]
+                texcoords = face_uvs.reshape(-1, 6).astype(np.float32)  # [F, 6]
+                face_dtype = [("vertex_indices", "i4", (3,)), ("texcoord", "f4", (6,))]
+                face_data = np.empty(faces.shape[0], dtype=face_dtype)
+                face_data["vertex_indices"] = faces
+                face_data["texcoord"] = texcoords
+            else:
+                face_dtype = [("vertex_indices", "i4", (3,))]
+                face_data = np.array(
+                    [tuple([face]) for face in faces.tolist()], dtype=face_dtype
+                )
+
+            f = plyfile.PlyElement.describe(face_data, "face")
 
             ply_data = plyfile.PlyData([v, f], text=False)
             ply_data.write(file_path)

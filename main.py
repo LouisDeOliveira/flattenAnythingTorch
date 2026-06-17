@@ -175,8 +175,13 @@ def train(cfg: DictConfig):
                 mesh.set_uvs(mesh_uvs)
                 mesh.generate_normal_map(512, f"./normal_map_{it}.png", k=1)
 
-                if it == n_iters - 1:
-                    mesh.to_file("./result.ply")
+    with torch.no_grad():
+        pcd = mesh.vertices
+        cut_mesh = Mc(pcd)
+        mesh_uvs = Mu(cut_mesh)
+        mesh_uvs = rescale_to_1(mesh_uvs)
+        mesh.set_uvs(mesh_uvs)
+        mesh.to_file("./result.ply")
 
 
 if __name__ == "__main__":
